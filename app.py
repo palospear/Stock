@@ -2,6 +2,10 @@ import streamlit as st
 import akshare as ak
 import pandas as pd
 
+import os
+os.environ['http_proxy'] = ''
+os.environ['https_proxy'] = ''
+
 # 设置网页基本信息
 st.set_page_config(page_title="个股资金流向看板", layout="centered")
 st.title("📈 个股资金流向与市值占比")
@@ -92,3 +96,16 @@ if st.button("查询资金流向"):
             st.write("📝 **近 20 日资金明细数据 (单位：元)**")
             # 展示数据表格
             st.dataframe(data['history_df'], use_container_width=True)
+            # --- 以下是新增的图表代码 ---
+            st.write("---")
+            st.write("📊 **近 20 日主力资金流向趋势**")
+            
+            # 为了画图好看，我们把日期设为图表的横坐标 (索引)
+            chart_data = data['history_df'].copy()
+            chart_data.set_index('日期', inplace=True)
+            
+            # 将单位转为“亿”
+            chart_data['主力净流入(亿)'] = chart_data['主力净流入-净额'] / 1e8
+            
+            # 使用 Streamlit 自带的柱状图渲染
+            st.bar_chart(chart_data['主力净流入(亿)'])
