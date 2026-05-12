@@ -1,111 +1,81 @@
+import os
+os.environ['NO_PROXY'] = '*' # 仅保留最基本的代理屏蔽
+
 import streamlit as st
 import akshare as ak
 import pandas as pd
+import time
 
-import os
-os.environ['http_proxy'] = ''
-os.environ['https_proxy'] = ''
+st.set_page_config(page_title="多股资金对比看板", layout="wide")
+st.title("📊 多股主力资金流向对比")
+st.write("数据来源：东方财富网 (通过 AkShare 获取)")
 
-# 设置网页基本信息
-st.set_page_config(page_title="个股资金流向看板", layout="centered")
-st.title("📈 个股资金流向与市值占比")
+# 输入多个代码
+stock_inputs = st.text_input(
+    "请输入股票代码（用英文逗号隔开）:", 
+    value="002611, 600519, 000001, 002594"
+)
 
-# 输入交互区
-stock_code = st.text_input("请输入 6 位股票代码 (例如截图中的东方精工：002611):", value="002611")
-
-# 将获取数据的函数缓存起来，防止每次点击页面刷新都重新向服务器请求数据导致被封 IP
 @st.cache_data(ttl=3600)
-def fetch_fund_flow_data(code):
-    try:
-        # 1. 获取实时行情，提取总市值
-        spot_df = ak.stock_zh_a_spot_em()
-        stock_info = spot_df[spot_df['代码'] == code]
-        
-        if stock_info.empty:
-            return None, "未找到该股票代码，请检查是否输入正确。"
+def fetch_multiple_stocks(code_string):
+    codes = [code.strip() for code in code_string.split(',') if code.strip()]
+    results = []
+    
+    progress_bar = st.progress(0)
+    
+    for i, code in enumerate(codes):
+        try:
+            # 【关键修改】：避开全市场数据，精准获取单只股票信息，绝不触发防火墙！
+            info_df = ak.stock_individual_info_em(symbol=code)
             
-        name = stock_info['名称'].values[0]
-        # AkShare 抓取的市值默认单位通常是“元”
-        market_cap = stock_info['总市值'].values[0] 
+            # 从信息表中提取名称和市值
+            name = info_df[info_df['item'] == '股票简称']['value'].values[0]
+            market_cap_raw = info_df[info_df['item'] == '总市值']['value'].values[0]
+            market_cap = float(market_cap_raw) / 1e8 # 转为亿元
+            
+            # 判断沪深市场前缀
+            market_str = "sh" if code.startswith("6") else "sz"
+            
+            # 获取个股资金流向
+            flow_df = ak.stock_individual_fund_flow(stock=code, market=market_str)
+            flow_df = flow_df.sort_values(by='日期', ascending=False).reset_index(drop=True)
+            
+            # 计算近3/5/20日主力净流入 (单位转为亿元)
+            inflow_3d = flow_df['主力净流入-净额'].head(3).sum() / 1e8
+            inflow_5d = flow_df['主力净流入-净额'].head(5).sum() / 1e8
+            inflow_20d = flow_df['主力净流入-净额'].head(20).sum() / 1e8
+            
+            results.append({
+                "代码": code,
+                "名称": name,
+                "总市值(亿)": round(market_cap, 2),
+                "3日净流入(亿)": round(inflow_3d, 2),
+                "5日净流入(亿)": round(inflow_5d, 2),
+                "20日净流入(亿)": round(inflow_20d, 2)
+            })
+            
+        except Exception as e:
+            st.warning(f"获取代码 {code} 的数据失败，请检查代码是否正确。")
+            
+        # 停顿 1 秒，礼貌请求
+        time.sleep(1)
+        progress_bar.progress((i + 1) / len(codes))
         
-        # 2. 判断市场前缀 (6开头为沪市 sh，其余通常视作深市 sz)
-        market_str = "sh" if code.startswith("6") else "sz"
-        
-        # 3. 获取个股资金流向历史数据
-        flow_df = ak.stock_individual_fund_flow(stock=code, market=market_str)
-        
-        # 按“日期”降序排列，确保最新的交易日在第一行
-        flow_df = flow_df.sort_values(by='日期', ascending=False).reset_index(drop=True)
-        
-        # 4. 计算近 3/5/20 日的主力资金净流入总额 (单位：元)
-        inflow_3d = flow_df['主力净流入-净额'].head(3).sum()
-        inflow_5d = flow_df['主力净流入-净额'].head(5).sum()
-        inflow_20d = flow_df['主力净流入-净额'].head(20).sum()
-        
-        return {
-            "name": name,
-            "market_cap": market_cap,
-            "inflow_3d": inflow_3d,
-            "inflow_5d": inflow_5d,
-            "inflow_20d": inflow_20d,
-            "history_df": flow_df[['日期', '收盘价', '主力净流入-净额', '超大单净流入-净额', '大单净流入-净额']].head(20)
-        }, None
-        
-    except Exception as e:
-        return None, f"获取数据失败，请稍后重试。错误信息: {e}"
+    return pd.DataFrame(results)
 
-# 当用户点击按钮时触发查询
-if st.button("查询资金流向"):
-    with st.spinner('正在从 AkShare 努力拉取数据...'):
-        data, err = fetch_fund_flow_data(stock_code)
+# 触发查询
+if st.button("开始对比"):
+    with st.spinner('正在逐个拉取数据，请稍候...'):
+        df_result = fetch_multiple_stocks(stock_inputs)
         
-        if err:
-            st.error(err)
-        else:
-            st.write("---")
-            st.subheader(f"📊 {data['name']} ({stock_code}) 数据展示")
+        if not df_result.empty:
+            st.success("🎉 数据拉取完成！")
             
-            # 将数值从“元”转换为“亿”，方便阅读（与同花顺/涨乐财富通一致）
-            mc_yi = data['market_cap'] / 1e8
-            in3_yi = data['inflow_3d'] / 1e8
-            in5_yi = data['inflow_5d'] / 1e8
-            in20_yi = data['inflow_20d'] / 1e8
-            
-            # 计算占总市值的百分比
-            ratio_3d = (data['inflow_3d'] / data['market_cap']) * 100
-            ratio_5d = (data['inflow_5d'] / data['market_cap']) * 100
-            ratio_20d = (data['inflow_20d'] / data['market_cap']) * 100
-            
-            # 顶部展示总市值
-            st.metric(label="当前总市值", value=f"{mc_yi:.2f} 亿")
-            
-            # 分三列展示 3日、5日、20日数据
-            col1, col2, col3 = st.columns(3)
-            
+            col1, col2 = st.columns([1, 1])
             with col1:
-                st.metric(label="3日主力净流入", value=f"{in3_yi:.2f} 亿", 
-                          delta=f"占总市值: {ratio_3d:.3f}%", delta_color="off")
+                st.subheader("📝 数据汇总表")
+                st.dataframe(df_result, use_container_width=True)
             with col2:
-                st.metric(label="5日主力净流入", value=f"{in5_yi:.2f} 亿", 
-                          delta=f"占总市值: {ratio_5d:.3f}%", delta_color="off")
-            with col3:
-                st.metric(label="20日主力净流入", value=f"{in20_yi:.2f} 亿", 
-                          delta=f"占总市值: {ratio_20d:.3f}%", delta_color="off")
-            
-            st.write("---")
-            st.write("📝 **近 20 日资金明细数据 (单位：元)**")
-            # 展示数据表格
-            st.dataframe(data['history_df'], use_container_width=True)
-            # --- 以下是新增的图表代码 ---
-            st.write("---")
-            st.write("📊 **近 20 日主力资金流向趋势**")
-            
-            # 为了画图好看，我们把日期设为图表的横坐标 (索引)
-            chart_data = data['history_df'].copy()
-            chart_data.set_index('日期', inplace=True)
-            
-            # 将单位转为“亿”
-            chart_data['主力净流入(亿)'] = chart_data['主力净流入-净额'] / 1e8
-            
-            # 使用 Streamlit 自带的柱状图渲染
-            st.bar_chart(chart_data['主力净流入(亿)'])
+                st.subheader("📈 20日主力资金净流入对比")
+                # 以名称为横坐标作图
+                chart_data = df_result.set_index("名称")["20日净流入(亿)"]
