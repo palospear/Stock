@@ -1,3 +1,5 @@
 streamlit
 akshare
 pandas
+requests
+urllib3

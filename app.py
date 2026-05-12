@@ -79,3 +79,9 @@ if st.button("开始对比"):
                 st.subheader("📈 20日主力资金净流入对比")
                 # 以名称为横坐标作图
                 chart_data = df_result.set_index("名称")["20日净流入(亿)"]
+
+try:
+    df = ak.stock_dzjy_mtt(symbol="600000") # 随便测试一个接口
+    st.write(df)
+except Exception as e:
+    st.error(f"数据抓取失败，错误原因: {e}")
